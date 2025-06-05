@@ -321,7 +321,7 @@ class ActorRolloutRefWorker(Worker):
                 mixed_precision=mixed_precision,
                 sync_module_states=True,
                 device_mesh=self.device_mesh,
-                forward_prefetch=False,
+                forward_prefetch=self.config.actor.fsdp_config.forward_prefetch,
             )
         elif fsdp_strategy == "fsdp2":
             assert CPUOffloadPolicy is not None, "PyTorch version >= 2.4 is required for using fully_shard API (FSDP2)"
@@ -595,7 +595,7 @@ class ActorRolloutRefWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
         # Support all hardwares
-        data = data.to(get_torch_device().current_device())
+        data = data.to('cpu')  # to device with each micro batch on actor.update_policy
 
         assert self._is_actor
         if self._is_offload_param:
@@ -953,7 +953,7 @@ class CriticWorker(Worker):
                 sharding_strategy=sharding_strategy,
                 mixed_precision=mixed_precision,
                 sync_module_states=True,
-                forward_prefetch=False,
+                forward_prefetch=self.config.model.fsdp_config.forward_prefetch,
                 device_mesh=self.device_mesh,
                 cpu_offload=None,
             )
@@ -1223,7 +1223,7 @@ class RewardModelWorker(Worker):
                 sharding_strategy=sharding_strategy,  # zero3
                 sync_module_states=True,
                 cpu_offload=CPUOffload(offload_params=True),
-                forward_prefetch=False,
+                forward_prefetch=self.config.model.fsdp_config.forward_prefetch,
                 device_mesh=self.device_mesh,
             )
         elif config.strategy == "fsdp2":

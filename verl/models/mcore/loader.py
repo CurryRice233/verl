@@ -276,8 +276,8 @@ def load_state_dict_to_megatron_gptmodel(state_dict, wrapped_models, config, par
         nonlocal mp_group
         tp_rank = mpu.get_expert_tensor_parallel_rank()
         tp_size = mpu.get_expert_tensor_parallel_world_size()
-        ep_rank = mpu.get_expert_data_parallel_rank()
-        ep_size = mpu.get_expert_data_parallel_world_size()
+        ep_rank = mpu.get_expert_model_parallel_rank()
+        ep_size = mpu.get_expert_model_parallel_world_size()
 
         if torch.distributed.get_rank() == src_rank:
             fc1_weights = []

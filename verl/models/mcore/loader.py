@@ -313,8 +313,8 @@ def load_state_dict_to_megatron_gptmodel(state_dict, wrapped_models, config, par
         else:
             assert fc1.shape == fc1_chunk_shape, f"rank #{torch.distributed.get_rank() == src_rank:} tensor {gate_names, up_names} shape {fc1.shape} != {fc1_chunk_shape}"
             assert fc2.shape == fc2_chunk_shape, f"rank #{torch.distributed.get_rank() == src_rank:} tensor {down_names} shape {fc2.shape} != {fc2_chunk_shape}"
-            fc1_sync_tensor = torch.empty(fc1, device=torch.cuda.current_device(), requires_grad=False)
-            fc2_sync_tensor = torch.empty(fc2, device=torch.cuda.current_device(), requires_grad=False)
+            fc1_sync_tensor = torch.empty_like(fc1, device=torch.cuda.current_device(), requires_grad=False)
+            fc2_sync_tensor = torch.empty_like(fc2, device=torch.cuda.current_device(), requires_grad=False)
 
         for i in range(ep_size):
             for j in range(tp_size):

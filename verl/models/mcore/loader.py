@@ -494,7 +494,7 @@ def load_state_dict_to_megatron_gptmodel(state_dict, wrapped_models, config, par
                 )
             else:
                 _broadcast_tensor(
-                    sync_layer.mlp.pre_mlp_layernorm.weight if dst_pp_rank == pp_rank else None,
+                    sync_layer.pre_mlp_layernorm.weight if dst_pp_rank == pp_rank else None,
                     f"{layer_name}.post_attention_layernorm.weight",
                 )
 

@@ -857,7 +857,7 @@ def per_tensor_generator(actor_module, model_config, weight_converter, transform
                 for local_expert_id in range(len(infer_params[0])):
                     global_expert_ids.append(num_experts_per_rank * ep_rank + local_expert_id)
                     global_expert_names.append(name_prefix + ".weight" + str(global_expert_ids[-1]))
-                    list_params.append(infer_params[ep_rank][local_expert_id].t())
+                    list_params.append(infer_params[ep_rank][local_expert_id].t().contiguous())
 
             for name, param in zip(global_expert_names, list_params):
                 if etp_size > 1:

@@ -859,7 +859,7 @@ def per_tensor_generator(actor_module, model_config, weight_converter, transform
                     global_expert_names.append(name_prefix + ".weight" + str(global_expert_ids[-1]))
                     list_params.append(infer_params[ep_rank][local_expert_id].t())
 
-            for name, param in zip(global_expert_names, infer_params):
+            for name, param in zip(global_expert_names, list_params):
                 if etp_size > 1:
                     # gather etp
                     etp_params = [torch.empty_like(param) for _ in range(etp_size)]
@@ -869,7 +869,7 @@ def per_tensor_generator(actor_module, model_config, weight_converter, transform
                     params = [param]
 
                 merge_params = default_tp_concat_fn(layer_name_mapping, name, broad_pp_tensor, params, model_config,
-                                                    convert_qkv_gate_up_by_simple_split)
+                                                    weight_converter.hf_config, convert_qkv_gate_up_by_simple_split)
                 if not isinstance(merge_params, list):
                     merge_params = [merge_params]
                 converted_names, converted_params = weight_converter.convert_param(name, merge_params)

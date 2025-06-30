@@ -96,7 +96,7 @@ def _init_dp_envs(tp_size):
     os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
     os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
     envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
-    envs.VLLM_DP_MASTER_IP = int(os.environ["VLLM_DP_MASTER_IP"])
+    envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
     envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
 
 
@@ -182,7 +182,7 @@ class vLLMRollout(BaseRollout):
             enable_prefix_caching=True,
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
-            enable_export_parallel=True,
+            enable_expert_parallel=True,
             **lora_kwargs,
             **engine_kwargs,
         )

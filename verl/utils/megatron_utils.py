@@ -806,6 +806,44 @@ def per_tensor_generator(actor_module, model_config, weight_converter, transform
                 yield from zip(converted_names, converted_params)
             continue
 
+        elif ".mlp.experts.weight" in cur_name:
+            num_experts = weight_converter.mcore_config.num_moe_experts
+            num_experts_per_rank = num_experts // ep_size
+            infer_params = [torch.empty_like(broad_pp_tensor) for _ in range(ep_size)]
+            torch.distributed.all_gather(infer_params, broad_pp_tensor, group=ep_group)
+            if "weight1" in cur_name:
+                infer_params = [torch.chunk(p, num_experts_per_rank, dim=1) for p in infer_params]
+                name_prefix = cur_name.split(".weight")[0] + ".linear_fc1"
+            else:
+                infer_params = [torch.chunk(p, num_experts_per_rank, dim=0) for p in infer_params]
+                name_prefix = cur_name.split(".weight")[0] + ".linear_fc2"
+
+            global_expert_ids = []
+            global_expert_names = []
+            list_params = []
+            for ep_rank in range(ep_size):
+                for local_expert_id in range(len(infer_params[0])):
+                    global_expert_ids.append(num_experts_per_rank * ep_rank + local_expert_id)
+                    global_expert_names.append(name_prefix + ".weight" + str(global_expert_ids[-1]))
+                    list_params.append(infer_params[ep_rank][local_expert_id].t().contiguous())
+
+            for name, param in zip(global_expert_names, list_params):
+                if etp_size > 1:
+                    # gather etp
+                    etp_params = [torch.empty_like(param) for _ in range(etp_size)]
+                    torch.distributed.all_gather(etp_params, param, group=etp_group)
+                    params = etp_params
+                else:
+                    params = [param]
+
+                merge_params = default_tp_concat_fn(layer_name_mapping, name, broad_pp_tensor, params, model_config,
+                                                    weight_converter.hf_config, convert_qkv_gate_up_by_simple_split)
+                if not isinstance(merge_params, list):
+                    merge_params = [merge_params]
+                converted_names, converted_params = weight_converter.convert_param(name, merge_params)
+                yield from zip(converted_names, converted_params)
+            continue
+
         # tp all gather
         if tp_utils.is_tensor_parallel_param(broad_pp_tensor):
             # allocate a new tensor with proper size

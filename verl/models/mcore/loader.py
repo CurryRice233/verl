@@ -270,6 +270,63 @@ def load_state_dict_to_megatron_gptmodel(state_dict, wrapped_models, config, par
             if (i == tp_rank) and (tensor is not None):
                 tensor.data.copy_(sync_tensor)
 
+    def _broadcast_tp_shard_tensor_grouped_mlp(fc1, fc2, gate_names, up_names, down_names) -> torch.Tensor:
+        """broadcast tensor in tp shards across mp_group"""
+        nonlocal state_dict
+        nonlocal mp_group
+        tp_rank = mpu.get_expert_tensor_parallel_rank()
+        tp_size = mpu.get_expert_tensor_parallel_world_size()
+        ep_rank = mpu.get_expert_model_parallel_rank()
+        ep_size = mpu.get_expert_model_parallel_world_size()
+
+        if torch.distributed.get_rank() == src_rank:
+            fc1_weights = []
+            fc2_weights = []
+            for gate_name, up_name, down_name in zip(gate_names, up_names, down_names):
+                fc1_weights.append(torch.cat([state_dict[gate_name].t(), state_dict[up_name].t()], dim=1))
+                fc2_weights.append(state_dict[down_name].t())
+
+            fc1_weights = torch.chunk(torch.cat(fc1_weights, dim=1), ep_size, dim=1)
+            fc1_weights = [torch.chunk(w, tp_size, dim=1) for w in fc1_weights]
+
+            fc2_weights = torch.chunk(torch.cat(fc2_weights, dim=0), ep_size, dim=0)
+            fc2_weights = [torch.chunk(w, tp_size, dim=0) for w in fc2_weights]
+            fc1_chunk_shape = fc1_weights[0][0].shape
+            fc2_chunk_shape = fc2_weights[0][0].shape
+        else:
+            fc1_chunk_shape = None
+            fc2_chunk_shape = None
+
+        obj_list = [fc1_chunk_shape, fc2_chunk_shape]
+        dist.broadcast_object_list(obj_list, src=src_rank, group=mp_group)
+        fc1_chunk_shape, fc2_chunk_shape = obj_list
+        if fc1_chunk_shape is None or fc2_chunk_shape is None:
+            # all or none ranks in the mp_group should reach here
+            print_rank_0(f"tp_shard tensor:[{gate_names, up_names, down_names}] not in state_dict, skip loading")
+            return
+
+        if fc1 is None and fc2 is None:
+            fc1_sync_tensor = torch.empty(fc1_chunk_shape, dtype=params_dtype, device=torch.cuda.current_device(),
+                                          requires_grad=False)
+            fc2_sync_tensor = torch.empty(fc2_chunk_shape, dtype=params_dtype, device=torch.cuda.current_device(),
+                                          requires_grad=False)
+        else:
+            assert fc1.shape == fc1_chunk_shape, f"rank #{torch.distributed.get_rank() == src_rank:} tensor {gate_names, up_names} shape {fc1.shape} != {fc1_chunk_shape}"
+            assert fc2.shape == fc2_chunk_shape, f"rank #{torch.distributed.get_rank() == src_rank:} tensor {down_names} shape {fc2.shape} != {fc2_chunk_shape}"
+            fc1_sync_tensor = torch.empty_like(fc1, device=torch.cuda.current_device(), requires_grad=False)
+            fc2_sync_tensor = torch.empty_like(fc2, device=torch.cuda.current_device(), requires_grad=False)
+
+        for i in range(ep_size):
+            for j in range(tp_size):
+                if torch.distributed.get_rank() == src_rank:
+                    fc1_sync_tensor.data.copy_(fc1_weights[i][j])
+                    fc2_sync_tensor.data.copy_(fc2_weights[i][j])
+                dist.broadcast(fc1_sync_tensor, src=src_rank, group=mp_group)
+                dist.broadcast(fc2_sync_tensor, src=src_rank, group=mp_group)
+                if (i == ep_rank) and (j == tp_rank) and (fc1 is not None) and (fc2 is not None):
+                    fc1.data.copy_(fc1_sync_tensor)
+                    fc2.data.copy_(fc2_sync_tensor)
+
     def _broadcast_tp_shard_tensor_qkv(tensor, q_name, k_name, v_name, bias=False) -> torch.Tensor:
         """broadcast tensor in tp shards across mp_group"""
         nonlocal state_dict
@@ -416,22 +473,56 @@ def load_state_dict_to_megatron_gptmodel(state_dict, wrapped_models, config, par
                 f"{layer_name}.self_attn.o_proj.weight",
                 chunk_dim=1,
             )
-            _broadcast_tensor(
-                sync_layer.mlp.linear_fc1.layer_norm_weight if dst_pp_rank == pp_rank else None,
-                f"{layer_name}.post_attention_layernorm.weight",
-            )
 
-            _broadcast_tp_shard_tensor_gate_up(
-                sync_layer.mlp.linear_fc1.weight if dst_pp_rank == pp_rank else None,
-                f"{layer_name}.mlp.gate_proj.weight",
-                f"{layer_name}.mlp.up_proj.weight",
-            )
+            if getattr(config, 'num_experts', 0) <= 1:
+                # MLP
+                _broadcast_tensor(
+                    sync_layer.mlp.linear_fc1.layer_norm_weight if dst_pp_rank == pp_rank else None,
+                    f"{layer_name}.post_attention_layernorm.weight",
+                )
 
-            _broadcast_tp_shard_tensor(
-                sync_layer.mlp.linear_fc2.weight if dst_pp_rank == pp_rank else None,
-                f"{layer_name}.mlp.down_proj.weight",
-                chunk_dim=1,
-            )
+                _broadcast_tp_shard_tensor_gate_up(
+                    sync_layer.mlp.linear_fc1.weight if dst_pp_rank == pp_rank else None,
+                    f"{layer_name}.mlp.gate_proj.weight",
+                    f"{layer_name}.mlp.up_proj.weight",
+                )
+
+                _broadcast_tp_shard_tensor(
+                    sync_layer.mlp.linear_fc2.weight if dst_pp_rank == pp_rank else None,
+                    f"{layer_name}.mlp.down_proj.weight",
+                    chunk_dim=1,
+                )
+            else:
+                _broadcast_tensor(
+                    sync_layer.pre_mlp_layernorm.weight if dst_pp_rank == pp_rank else None,
+                    f"{layer_name}.post_attention_layernorm.weight",
+                )
+
+                _broadcast_tensor(
+                    sync_layer.mlp.router.weight if dst_pp_rank == pp_rank else None,
+                    f"{layer_name}.mlp.gate.weight",
+                )
+
+                if hasattr(sync_layer.mlp.experts, 'weight1'):
+                    # GroupedMLP
+                    gate_names = [f"{layer_name}.mlp.experts.{i}.gate_proj.weight" for i in range(config.num_experts)]
+                    up_names = [f"{layer_name}.mlp.experts.{i}.up_proj.weight" for i in range(config.num_experts)]
+                    down_names = [f"{layer_name}.mlp.experts.{i}.down_proj.weight" for i in range(config.num_experts)]
+
+                    _broadcast_tp_shard_tensor_grouped_mlp(
+                        sync_layer.mlp.experts.weight1 if dst_pp_rank == pp_rank else None,
+                        sync_layer.mlp.experts.weight2 if dst_pp_rank == pp_rank else None,
+                        gate_names, up_names, down_names
+                    )
+                elif hasattr(sync_layer.mlp.experts, 'linear_fc1'):
+                    # TEGroupedMLP
+                    raise NotImplementedError("TEGroupedMLP is not support for non dist-ckpt, please set use_dist_checkpointing=True")
+                elif hasattr(sync_layer.mlp.experts, 'local_experts'):
+                    # SequentialMLP
+                    raise NotImplementedError("SequentialMLP is not support.")
+                else:
+                    raise RuntimeError(f'Unknown MLP layer {sync_layer.mlp.experts}')
+
         # Final Layernorm
         # -------------------
         print_rank_0("loading final layernorm...")

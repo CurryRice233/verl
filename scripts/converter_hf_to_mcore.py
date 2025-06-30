@@ -18,6 +18,10 @@ import os
 import warnings
 from contextlib import contextmanager
 from typing import Any, Callable, ContextManager
+try:
+    from mindspeed import megatron_adaptor  # Megatron NPU monkey patch
+except ImportError:
+    pass
 
 import torch
 from accelerate import init_empty_weights

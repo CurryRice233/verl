@@ -25,8 +25,13 @@ from typing import Union
 import torch
 import torch.distributed
 from codetiming import Timer
-from megatron.core import parallel_state as mpu
 from omegaconf import DictConfig, OmegaConf
+
+try:
+    from mindspeed import megatron_adaptor  # Megatron NPU monkey patch
+except ImportError:
+    pass
+from megatron.core import parallel_state as mpu
 
 from verl import DataProto
 from verl.single_controller.base.decorator import Dispatch, register

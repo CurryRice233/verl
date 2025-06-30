@@ -79,6 +79,27 @@ def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> 
         return np.repeat(value, repeats, axis=0)
 
 
+def _init_dp_envs(tp_size):
+    import vllm.envs as envs
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    ip = os.environ.get("VLLM_DP_MASTER_IP", "127.0.0.1")
+    port = int(os.environ.get("MASTER_PORT")) + 10
+    dp_size = world_size // tp_size
+    local_dp_rank = rank // tp_size
+    group_idx = rank % tp_size
+
+    os.environ["VLLM_DP_MASTER_IP"] = ip
+    os.environ["VLLM_DP_MASTER_PORT"] = str(port + group_idx)
+    os.environ["VLLM_DP_RANK"] = str(local_dp_rank)
+    os.environ["VLLM_DP_SIZE"] = str(dp_size)
+    os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
+    os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
+    envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
+    envs.VLLM_DP_MASTER_IP = int(os.environ["VLLM_DP_MASTER_IP"])
+    envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
+
+
 class vLLMRollout(BaseRollout):
     def __init__(self, model_path: str, config: DictConfig, tokenizer, model_hf_config, **kwargs):
         """A vLLM rollout. It requires the module is supported by the vllm.
@@ -142,6 +163,7 @@ class vLLMRollout(BaseRollout):
         if config.get("limit_images", None):  # support for multi-image data
             engine_kwargs["limit_mm_per_prompt"] = {"image": config.get("limit_images")}
 
+        _init_dp_envs(tensor_parallel_size)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=config.free_cache_engine,
@@ -160,6 +182,7 @@ class vLLMRollout(BaseRollout):
             enable_prefix_caching=True,
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
+            enable_export_parallel=True,
             **lora_kwargs,
             **engine_kwargs,
         )

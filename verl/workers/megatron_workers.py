@@ -28,7 +28,7 @@ from codetiming import Timer
 from omegaconf import DictConfig, OmegaConf
 
 try:
-    from mindspeed import megatron_adaptor  # Megatron NPU monkey patch
+    from mindspeed.megatron_adaptor import repatch  # Megatron NPU monkey patch
 except ImportError:
     pass
 from megatron.core import parallel_state as mpu
@@ -81,6 +81,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
     def __init__(self, config: DictConfig, role: str):
         MegatronWorker.__init__(self)
         self.config = config
+        repatch(self.config.actor.megatron.get("override_transformer_config", {}))
 
         # NOTE(sgm): We utilize colocate WorkerGroup by default.
         # As a result, Workers for different model share the same process.
